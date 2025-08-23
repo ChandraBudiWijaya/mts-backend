@@ -62,6 +62,16 @@ class User extends Authenticatable
      * @param string $permissionSlug
      * @return bool
      */
+
+    /**
+     * Mendefinisikan relasi one-to-one ke model Employee.
+     */
+    public function employee()
+    {
+        return $this->hasOne(Employee::class);
+    }
+
+    // -----------------------------
     public function hasPermission(string $permissionSlug): bool
     {
         // Loop melalui setiap peran yang dimiliki user
