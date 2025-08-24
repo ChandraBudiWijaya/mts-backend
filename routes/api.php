@@ -65,6 +65,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/work-plans/{workPlan}', [WorkPlanController::class, 'destroy'])->middleware('can:delete-work-plans');
     Route::post('/work-plans/{workPlan}/approve', [WorkPlanController::class, 'approve'])->middleware('can:approve-work-plans');
 
+    // --- DASHBOARD & REPORTING ---
+    Route::get('/reports/dashboard', [ReportController::class, 'dashboardStats'])->middleware('can:view-reports');
+    Route::get('/reports/visits', [ReportController::class, 'visitDetails'])->middleware('can:view-reports');
+
     // --- Rute untuk fitur baru bisa ditambahkan di sini ---
 
 });
