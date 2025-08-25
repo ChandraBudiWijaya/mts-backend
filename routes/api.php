@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\EmployeeController;
 use App\Http\Controllers\Api\GeofenceController;
 use App\Http\Controllers\Api\SyncController;
 use App\Http\Controllers\Api\WorkPlanController;
+use App\Http\Controllers\Api\ReportController;
 
 /*
 |--------------------------------------------------------------------------
