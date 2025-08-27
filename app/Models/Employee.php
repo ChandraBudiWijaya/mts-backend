@@ -21,6 +21,9 @@ class Employee extends Model
         'position',
         'phone',
         'photo_url',
+        'plantation_group',
+        'wilayah',
+
     ];
 
     /**

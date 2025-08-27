@@ -12,6 +12,7 @@ use App\Models\Employee;
 use App\Models\Geofence;
 use App\Models\DailySummary;
 use App\Models\LocationVisit;
+use App\Models\TrackingPoint;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
@@ -54,10 +55,24 @@ class ProcessDailyTrackingData implements ShouldQueue
                     $data = $document->data();
                     // Pastikan data memiliki format yang benar
                     if (isset($data['latitude'], $data['longitude'], $data['timestamp'])) {
+                        $timestamp = Carbon::parse($data['timestamp']);
+
+                        // Simpan titik tracking mentah sebelum proses transformasi
+                        TrackingPoint::updateOrCreate(
+                            ['source_id' => $document->id()],
+                            [
+                                'employee_id' => $employee->id,
+                                'timestamp' => $timestamp,
+                                'latitude' => $data['latitude'],
+                                'longitude' => $data['longitude'],
+                            ]
+                        );
+
+                        // Kumpulkan titik untuk proses transformasi berikutnya
                         $trackingPoints[] = [
                             'lat' => $data['latitude'],
                             'lng' => $data['longitude'],
-                            'timestamp' => Carbon::parse($data['timestamp']),
+                            'timestamp' => $timestamp,
                         ];
                     }
                 }
