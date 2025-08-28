@@ -6,29 +6,28 @@ use App\Http\Controllers\Controller;
 use App\Models\WorkPlan;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use App\Http\Traits\ApiResponse; // Import trait
+use App\Http\Resources\WorkPlanResource; // Import resource
 
 class WorkPlanController extends Controller
 {
+    use ApiResponse; // Gunakan trait
+
     public function index()
     {
         $user = Auth::user();
+        $query = WorkPlan::with(['employee', 'geofence', 'creator', 'approver'])->latest();
 
-        // Jika user adalah Mandor, hanya tampilkan rencana kerja miliknya
-        if ($user->roles->contains('slug', 'mandor')) {
-            // Pastikan user tersebut terhubung dengan data employee
-            if ($user->employee) {
-                 return WorkPlan::where('employee_id', $user->employee->id)
-                    ->with(['employee:id,name', 'geofence:id,name', 'creator:id,name'])
-                    ->latest()
-                    ->get();
-            }
-            return response()->json([]); // Kembalikan array kosong jika tidak ada data employee
+        if ($user->roles->contains('slug', 'mandor') && $user->employee) {
+            $query->where('employee_id', $user->employee->id);
         }
 
-        // Untuk peran lain (Admin, Kabag, Kasie), tampilkan semua
-        return WorkPlan::with(['employee:id,name', 'geofence:id,name', 'creator:id,name'])
-            ->latest()
-            ->get();
+        $workPlans = $query->get();
+
+        return $this->successResponse(
+            WorkPlanResource::collection($workPlans),
+            'Data rencana kerja berhasil diambil.'
+        );
     }
 
     public function store(Request $request)
@@ -47,22 +46,29 @@ class WorkPlanController extends Controller
             'geofence_id' => $validatedData['geofence_id'],
             'spk_number' => $validatedData['spk_number'],
             'activity_description' => $validatedData['activity_description'],
-            'status' => 'Submitted', // Langsung Submitted saat dibuat
-            'created_by' => Auth::id(), // Diisi oleh user yang sedang login
+            'status' => 'Submitted',
+            'created_by' => Auth::id(),
         ]);
 
-        return response()->json($workPlan, 201);
+        return $this->successResponse(
+            new WorkPlanResource($workPlan->load(['employee', 'geofence', 'creator'])),
+            'Rencana kerja berhasil dibuat.',
+            201
+        );
     }
 
     public function show(WorkPlan $workPlan)
     {
-        return $workPlan->load(['employee', 'geofence', 'creator', 'approver']);
+        return $this->successResponse(
+            new WorkPlanResource($workPlan->load(['employee', 'geofence', 'creator', 'approver'])),
+            'Detail rencana kerja berhasil diambil.'
+        );
     }
 
     public function update(Request $request, WorkPlan $workPlan)
     {
         if (!in_array($workPlan->status, ['Draft', 'Submitted'])) {
-            return response()->json(['message' => 'Rencana kerja tidak dapat diubah.'], 403);
+            return $this->errorResponse('Rencana kerja tidak dapat diubah.', 403);
         }
 
         $validatedData = $request->validate([
@@ -75,13 +81,16 @@ class WorkPlanController extends Controller
 
         $workPlan->update($validatedData);
 
-        return response()->json($workPlan);
+        return $this->successResponse(
+            new WorkPlanResource($workPlan->load(['employee', 'geofence', 'creator', 'approver'])),
+            'Rencana kerja berhasil diperbarui.'
+        );
     }
 
     public function destroy(WorkPlan $workPlan)
     {
         $workPlan->delete();
-        return response()->json(null, 204);
+        return $this->successResponse(null, 'Rencana kerja berhasil dihapus.');
     }
 
     public function approve(WorkPlan $workPlan)
@@ -91,6 +100,9 @@ class WorkPlanController extends Controller
             'approved_by' => Auth::id(),
         ]);
 
-        return response()->json($workPlan);
+        return $this->successResponse(
+            new WorkPlanResource($workPlan->load(['employee', 'geofence', 'creator', 'approver'])),
+            'Rencana kerja berhasil disetujui.'
+        );
     }
 }

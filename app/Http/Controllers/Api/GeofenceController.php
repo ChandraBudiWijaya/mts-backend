@@ -5,23 +5,19 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Geofence;
 use Illuminate\Http\Request;
+use App\Http\Traits\ApiResponse;
+use App\Http\Resources\GeofenceResource;
 
 class GeofenceController extends Controller
 {
+    use ApiResponse;
 
-    /**
-     * Menampilkan daftar semua area kerja (geofence).
-     */
     public function index()
     {
-        return Geofence::all();
+        $geofences = Geofence::all();
+        return $this->successResponse(GeofenceResource::collection($geofences), 'Data geofence berhasil diambil.');
     }
 
-    /**
-     * Menyimpan area kerja baru.
-     * Catatan: Pembuatan geofence utama dilakukan via sinkronisasi DWH.
-     * Fungsi ini mungkin digunakan untuk kasus khusus atau tidak digunakan sama sekali.
-     */
     public function store(Request $request)
     {
         $validatedData = $request->validate([
@@ -34,25 +30,17 @@ class GeofenceController extends Controller
             'coordinates' => 'required|json',
         ]);
 
-        // Pastikan coordinates di-decode sebelum disimpan jika inputnya string JSON
-        $validatedData['coordinates'] = json_decode($validatedData['coordinates'], true);
-
         $geofence = Geofence::create($validatedData);
 
-        return response()->json($geofence, 201);
+        return $this->successResponse(new GeofenceResource($geofence), 'Geofence berhasil dibuat.', 201);
     }
 
-    /**
-     * Menampilkan satu area kerja spesifik.
-     */
-    public function show(Geofence $geofence)
+    public function show(Request $request, Geofence $geofence)
     {
-        return $geofence;
+        // Kita inject Request di sini agar bisa digunakan di dalam Resource
+        return $this->successResponse(new GeofenceResource($geofence), 'Detail geofence berhasil diambil.');
     }
 
-    /**
-     * Mengupdate data area kerja.
-     */
     public function update(Request $request, Geofence $geofence)
     {
         $validatedData = $request->validate([
@@ -64,22 +52,15 @@ class GeofenceController extends Controller
             'coordinates' => 'sometimes|required|json',
         ]);
 
-        if (isset($validatedData['coordinates'])) {
-            $validatedData['coordinates'] = json_decode($validatedData['coordinates'], true);
-        }
-
         $geofence->update($validatedData);
 
-        return response()->json($geofence);
+        return $this->successResponse(new GeofenceResource($geofence), 'Geofence berhasil diperbarui.');
     }
 
-    /**
-     * Menghapus data area kerja.
-     */
     public function destroy(Geofence $geofence)
     {
         $geofence->delete();
 
-        return response()->json(null, 204);
+        return $this->successResponse(null, 'Geofence berhasil dihapus.');
     }
 }

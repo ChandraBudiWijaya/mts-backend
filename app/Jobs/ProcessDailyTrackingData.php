@@ -15,6 +15,7 @@ use App\Models\LocationVisit;
 use App\Models\TrackingPoint;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Collection;
 
 class ProcessDailyTrackingData implements ShouldQueue
 {
@@ -22,42 +23,32 @@ class ProcessDailyTrackingData implements ShouldQueue
 
     protected $dateToProcess;
 
-    /**
-     * Create a new job instance.
-     */
     public function __construct(Carbon $dateToProcess = null)
     {
-        // Jika tidak ada tanggal spesifik, proses data untuk hari kemarin.
         $this->dateToProcess = $dateToProcess ?? Carbon::yesterday();
     }
 
-    /**
-     * Execute the job.
-     */
     public function handle(Firestore $firestore): void
     {
         Log::info("Memulai job ProcessDailyTrackingData untuk tanggal: " . $this->dateToProcess->toDateString());
 
         $db = $firestore->database();
         $allEmployees = Employee::all();
-        $allGeofences = Geofence::all(); // Ambil semua geofence sekali saja untuk efisiensi
+        $allGeofences = Geofence::all();
 
         foreach ($allEmployees as $employee) {
             $dateStr = $this->dateToProcess->format('Y-m-d');
             $collectionPath = "tracking/{$employee->id}/{$dateStr}";
 
-            // 1. EXTRACT: Ambil semua data GPS untuk karyawan ini pada hari tersebut dari Firestore
             $documents = $db->collection($collectionPath)->orderBy('timestamp')->documents();
 
-            $trackingPoints = [];
+            $rawTrackingPoints = [];
             foreach ($documents as $document) {
                 if ($document->exists()) {
                     $data = $document->data();
-                    // Pastikan data memiliki format yang benar
                     if (isset($data['latitude'], $data['longitude'], $data['timestamp'])) {
                         $timestamp = Carbon::parse($data['timestamp']);
 
-                        // Simpan titik tracking mentah sebelum proses transformasi
                         TrackingPoint::updateOrCreate(
                             ['source_id' => $document->id()],
                             [
@@ -68,8 +59,7 @@ class ProcessDailyTrackingData implements ShouldQueue
                             ]
                         );
 
-                        // Kumpulkan titik untuk proses transformasi berikutnya
-                        $trackingPoints[] = [
+                        $rawTrackingPoints[] = [
                             'lat' => $data['latitude'],
                             'lng' => $data['longitude'],
                             'timestamp' => $timestamp,
@@ -78,27 +68,36 @@ class ProcessDailyTrackingData implements ShouldQueue
                 }
             }
 
-            if (empty($trackingPoints)) {
+            if (empty($rawTrackingPoints)) {
                 Log::info("Tidak ada data tracking untuk karyawan {$employee->id} pada {$dateStr}.");
-                continue; // Lanjut ke karyawan berikutnya
+                continue;
             }
 
-            // 2. TRANSFORM: Olah data GPS menjadi informasi yang berguna
-            $totalDurationMinutes = $this->calculateTotalDuration($trackingPoints);
-            $totalDistanceKm = $this->calculateTotalDistance($trackingPoints);
-            $visitData = $this->analyzeVisits($trackingPoints, $allGeofences);
+            $trackingPointsCollection = collect($rawTrackingPoints);
 
-            // 3. LOAD: Simpan hasil olahan ke database PostgreSQL
-            $this->saveSummary($employee, $dateStr, $totalDurationMinutes, $totalDistanceKm, $visitData['total_minutes_inside']);
-            $this->saveLocationVisits($employee, $dateStr, $visitData['visits']);
+            $totalDurationMinutes = $this->calculateTotalDuration($rawTrackingPoints);
+            $totalDistanceKm = $this->calculateTotalDistance($rawTrackingPoints);
+            $visitData = $this->analyzeVisits($trackingPointsCollection, $allGeofences);
+
+            // Simpan summary
+            $summary = DailySummary::updateOrCreate(
+                ['employee_id' => $employee->id, 'date' => $dateStr],
+                [
+                    'total_work_minutes' => $totalDurationMinutes,
+                    'total_distance_km' => $totalDistanceKm,
+                    'total_outside_area_minutes' => max(0, $totalDurationMinutes - $visitData['total_minutes_inside']),
+                    'last_update' => Carbon::now(),
+                ]
+            );
+
+            // Simpan detail kunjungan
+            $this->saveLocationVisits($summary, $visitData['visits']);
 
             Log::info("Berhasil memproses data untuk karyawan {$employee->id} pada {$dateStr}.");
         }
 
         Log::info("Selesai menjalankan job ProcessDailyTrackingData.");
     }
-
-    // --- Fungsi-fungsi Helper untuk Kalkulasi ---
 
     private function calculateTotalDuration(array $points): int
     {
@@ -120,71 +119,139 @@ class ProcessDailyTrackingData implements ShouldQueue
         return round($totalDistance, 2);
     }
 
-    // Fungsi untuk menganalisis kunjungan (ini adalah logika inti yang disederhanakan)
-    private function analyzeVisits(array $points, $geofences): array
+    private function analyzeVisits(Collection $points, Collection $geofences): array
     {
-        // Logika untuk mendeteksi kapan mandor masuk dan keluar dari setiap geofence
-        // dan menghitung total durasi di dalamnya.
-        // Untuk saat ini, kita akan menggunakan data dummy.
-        // Implementasi sebenarnya memerlukan algoritma point-in-polygon.
+        $visits = [];
+        $activeVisits = [];
+        $totalMinutesInside = 0;
 
-        // Contoh data hasil analisis (dummy)
+        foreach ($points as $point) {
+            $pointCoords = ['lat' => $point['lat'], 'lng' => $point['lng']];
+
+            foreach ($geofences as $geofence) {
+                // Koordinat disimpan sebagai JSON, jadi kita decode.
+                $polygon = json_decode($geofence->coordinates, true);
+                if (json_last_error() !== JSON_ERROR_NONE || !is_array($polygon)) {
+                    continue; // Lewati geofence jika datanya tidak valid
+                }
+
+                $isInside = $this->isPointInPolygon($pointCoords, $polygon);
+                $activeVisitKey = 'geofence_' . $geofence->id;
+
+                if ($isInside) {
+                    if (!isset($activeVisits[$activeVisitKey])) {
+                        $activeVisits[$activeVisitKey] = [
+                            'geofence_id' => $geofence->id,
+                            'entry_time' => $point['timestamp'],
+                            'last_seen_time' => $point['timestamp'],
+                        ];
+                    } else {
+                        $activeVisits[$activeVisitKey]['last_seen_time'] = $point['timestamp'];
+                    }
+                } else {
+                    if (isset($activeVisits[$activeVisitKey])) {
+                        $visitData = $activeVisits[$activeVisitKey];
+                        $durationMinutes = $visitData['entry_time']->diffInMinutes($visitData['last_seen_time']);
+
+                        if ($durationMinutes > 0) {
+                             $visits[] = [
+                                'geofence_id' => $visitData['geofence_id'],
+                                'entry_time' => $visitData['entry_time'],
+                                'exit_time' => $visitData['last_seen_time'],
+                                'visit_duration_minutes' => $durationMinutes,
+                            ];
+                            $totalMinutesInside += $durationMinutes;
+                        }
+                        unset($activeVisits[$activeVisitKey]);
+                    }
+                }
+            }
+        }
+
+        foreach ($activeVisits as $visitData) {
+            $durationMinutes = $visitData['entry_time']->diffInMinutes($visitData['last_seen_time']);
+             if ($durationMinutes > 0) {
+                $visits[] = [
+                    'geofence_id' => $visitData['geofence_id'],
+                    'entry_time' => $visitData['entry_time'],
+                    'exit_time' => $visitData['last_seen_time'],
+                    'visit_duration_minutes' => $durationMinutes,
+                ];
+                $totalMinutesInside += $durationMinutes;
+            }
+        }
+
         return [
-            'total_minutes_inside' => rand(100, 400),
-            'visits' => [
-                [
-                    'geofence_id' => 1,
-                    'entry_time' => $points[0]['timestamp']->copy()->addMinutes(10),
-                    'exit_time' => $points[0]['timestamp']->copy()->addMinutes(70),
-                    'visit_duration_minutes' => 60,
-                ],
-                [
-                    'geofence_id' => 2,
-                    'entry_time' => $points[0]['timestamp']->copy()->addMinutes(90),
-                    'exit_time' => $points[0]['timestamp']->copy()->addMinutes(150),
-                    'visit_duration_minutes' => 60,
-                ]
-            ]
+            'visits' => $visits,
+            'total_minutes_inside' => $totalMinutesInside,
         ];
     }
 
-    private function saveSummary($employee, $date, $totalDuration, $totalDistance, $minutesInside)
+    private function saveLocationVisits(DailySummary $summary, array $visits)
     {
-        DailySummary::updateOrCreate(
-            ['employee_id' => $employee->id, 'date' => $date],
-            [
-                'total_work_minutes' => $totalDuration,
-                'total_distance_km' => $totalDistance,
-                'total_outside_area_minutes' => $totalDuration - $minutesInside,
-                'last_update' => Carbon::now(),
-            ]
-        );
-    }
-
-    private function saveLocationVisits($employee, $date, array $visits)
-    {
-        // Hapus data kunjungan lama untuk hari itu untuk menghindari duplikasi
-        LocationVisit::where('employee_id', $employee->id)->where('date', $date)->delete();
+        // Hapus kunjungan lama untuk ringkasan ini untuk menghindari duplikasi
+        LocationVisit::where('daily_summary_id', $summary->id)->delete();
 
         foreach ($visits as $visit) {
             LocationVisit::create([
-                'date' => $date,
-                'employee_id' => $employee->id,
+                'daily_summary_id' => $summary->id,
                 'geofence_id' => $visit['geofence_id'],
-                'entry_time' => $visit['entry_time'],
-                'exit_time' => $visit['exit_time'],
-                'visit_duration_minutes' => $visit['visit_duration_minutes'],
+                'check_in_time' => $visit['entry_time'],
+                'check_out_time' => $visit['exit_time'],
+                'duration_seconds' => $visit['entry_time']->diffInSeconds($visit['exit_time']),
             ]);
         }
     }
 
-    // Rumus Haversine untuk menghitung jarak antara dua titik koordinat
-    private function haversineDistance($lat1, $lon1, $lat2, $lon2) {
-        $earthRadius = 6371; // Radius bumi dalam kilometer
+    private function haversineDistance($lat1, $lon1, $lat2, $lon2): float
+    {
+        $earthRadius = 6371;
         $dLat = deg2rad($lat2 - $lat1);
         $dLon = deg2rad($lon2 - $lon1);
         $a = sin($dLat / 2) * sin($dLat / 2) + cos(deg2rad($lat1)) * cos(deg2rad($lat2)) * sin($dLon / 2) * sin($dLon / 2);
         $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
         return $earthRadius * $c;
+    }
+
+    private function isPointInPolygon(array $point, array $polygon): bool
+    {
+        $inside = false;
+        $x = $point['lng'];
+        $y = $point['lat'];
+        $vertexCount = count($polygon);
+
+        if ($vertexCount < 3) {
+            return false;
+        }
+
+        // Pastikan format koordinat di dalam poligon adalah ['lat' => ..., 'lng' => ...]
+        // Jika formatnya [lng, lat], sesuaikan di sini.
+        // Asumsi saat ini adalah format ['lat' => ..., 'lng' => ...]
+
+        $j = $vertexCount - 1;
+        for ($i = 0; $i < $vertexCount; $j = $i++) {
+            // Periksa apakah format array polygon memiliki key 'lat' dan 'lng'
+            if (!isset($polygon[$i]['lat']) || !isset($polygon[$i]['lng']) || !isset($polygon[$j]['lat']) || !isset($polygon[$j]['lng'])) {
+                // Jika formatnya hanya [lng, lat]
+                 $xi = $polygon[$i][0]; // lng
+                 $yi = $polygon[$i][1]; // lat
+                 $xj = $polygon[$j][0]; // lng
+                 $yj = $polygon[$j][1]; // lat
+            } else {
+                // Jika formatnya ['lat' => ..., 'lng' => ...]
+                 $xi = $polygon[$i]['lng'];
+                 $yi = $polygon[$i]['lat'];
+                 $xj = $polygon[$j]['lng'];
+                 $yj = $polygon[$j]['lat'];
+            }
+
+            $intersect = (($yi > $y) !== ($yj > $y))
+                && ($x < ($xj - $xi) * ($y - $yi) / ($yj - $yi) + $xi);
+            if ($intersect) {
+                $inside = !$inside;
+            }
+        }
+
+        return $inside;
     }
 }

@@ -1,6 +1,6 @@
 <?php
 
-use Illuminate\Http\Request;
+use Illuminate\HttpRequest;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\EmployeeController;
@@ -8,6 +8,10 @@ use App\Http\Controllers\Api\GeofenceController;
 use App\Http\Controllers\Api\SyncController;
 use App\Http\Controllers\Api\WorkPlanController;
 use App\Http\Controllers\Api\ReportController;
+use App\Http\Controllers\Api\RoleController;
+use App\Http\Controllers\Api\ParameterController;
+use App\Http\Controllers\Api\MobileSettingsController;
+use App\Http\Controllers\Api\LiveTrackingController;
 
 /*
 |--------------------------------------------------------------------------
@@ -18,7 +22,8 @@ use App\Http\Controllers\Api\ReportController;
 |
 */
 
-Route::post('/login', [AuthController::class, 'login']);
+// Terapkan rate limiter 'login' ke endpoint login
+Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login');
 
 
 /*
@@ -26,12 +31,12 @@ Route::post('/login', [AuthController::class, 'login']);
 | Authenticated API Routes
 |--------------------------------------------------------------------------
 |
-| Semua rute di dalam grup ini dilindungi oleh Sanctum dan memerlukan
-| Bearer Token yang valid untuk bisa diakses.
+| Semua rute di dalam grup ini dilindungi oleh Sanctum, hak akses (can),
+| dan rate limiter umum untuk API.
 |
 */
 
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
 
     // --- AUTHENTICATION ---
     Route::post('/logout', [AuthController::class, 'logout']);
@@ -40,6 +45,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // --- EMPLOYEE MANAGEMENT ---
+    Route::post('/employees/{employee}/photo', [EmployeeController::class, 'updatePhoto']);
     Route::get('/employees', [EmployeeController::class, 'index'])->middleware('can:view-employees');
     Route::post('/employees', [EmployeeController::class, 'store'])->middleware('can:create-employees');
     Route::get('/employees/{employee}', [EmployeeController::class, 'show'])->middleware('can:view-employees');
@@ -50,7 +56,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // --- GEOFENCE MANAGEMENT ---
     Route::get('/geofences', [GeofenceController::class, 'index'])->middleware('can:view-geofences');
     Route::post('/geofences', [GeofenceController::class, 'store'])->middleware('can:create-geofences');
-    Route::get('/geofences/{geofence}', [GeofenceController::class, 'show'])->middleware('can:view-geofences');
+    Route::get('/geofences/{geofence}', [GeofenceController::class, 'show'])->middleware('can:view-geofences')->name('geofences.show');
     Route::put('/geofences/{geofence}', [GeofenceController::class, 'update'])->middleware('can:edit-geofences');
     Route::patch('/geofences/{geofence}', [GeofenceController::class, 'update'])->middleware('can:edit-geofences');
     Route::delete('/geofences/{geofence}', [GeofenceController::class, 'destroy'])->middleware('can:delete-geofences');
@@ -70,6 +76,19 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/reports/dashboard', [ReportController::class, 'dashboardStats'])->middleware('can:view-reports');
     Route::get('/reports/visits', [ReportController::class, 'visitDetails'])->middleware('can:view-reports');
 
-    // --- Rute untuk fitur baru bisa ditambahkan di sini ---
+    // --- RBAC MANAGEMENT ---
+    Route::get('/permissions', [RoleController::class, 'allPermissions']);
+    Route::apiResource('roles', RoleController::class);
+
+    // --- PARAMETER MANAGEMENT ---
+    Route::get('/parameters', [ParameterController::class, 'index']);
+    Route::get('/parameters/{parameter}', [ParameterController::class, 'show']);
+    Route::put('/parameters/{parameter}', [ParameterController::class, 'update']);
+
+    // --- LIVE TRACKING ---
+    Route::get('/live-tracking', [LiveTrackingController::class, 'index']);
+
+    // --- MOBILE APP ENDPOINTS ---
+    Route::get('/mobile/settings', [MobileSettingsController::class, 'getMobileSettings']);
 
 });

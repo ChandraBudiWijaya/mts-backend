@@ -5,21 +5,25 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Employee;
 use App\Models\User;
-use App\Models\Role;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use App\Http\Requests\StoreEmployeeRequest;
+use App\Http\Requests\UpdateEmployeeRequest;
+use App\Http\Traits\ApiResponse;
+use App\Http\Resources\EmployeeResource;
+use CloudinaryLabs\CloudinaryLaravel\Facades\Cloudinary; // 1. Import Cloudinary
 
 class EmployeeController extends Controller
 {
+    use ApiResponse;
+
     /**
      * Menampilkan daftar semua karyawan dengan fungsionalitas filter.
      */
     public function index(Request $request)
     {
-        // Memulai query builder
         $query = Employee::query();
 
-        // Filter berdasarkan pencarian Nama Karyawan atau Username (email)
         if ($request->has('search')) {
             $searchTerm = $request->search;
             $query->where(function ($q) use ($searchTerm) {
@@ -30,48 +34,33 @@ class EmployeeController extends Controller
             });
         }
 
-        // Filter berdasarkan Plantation Group
         if ($request->has('pg')) {
             $query->where('plantation_group', $request->pg);
         }
 
-        // Filter berdasarkan Wilayah
         if ($request->has('wilayah')) {
             $query->where('wilayah', $request->wilayah);
         }
 
-        // Eager load relasi dan eksekusi query
-        return $query->with('user.roles')->get();
+        $employees = $query->with('user.roles')->get();
+        return $this->successResponse(EmployeeResource::collection($employees), 'Data karyawan berhasil diambil.');
     }
 
     /**
      * Menyimpan karyawan baru sesuai dengan data dari form.
      */
-    public function store(Request $request)
+    public function store(StoreEmployeeRequest $request)
     {
-        $validatedData = $request->validate([
-            'id' => 'required|string|unique:employees,id',
-            'name' => 'required|string|max:255',
-            'email' => 'required|email|unique:users,email',
-            'phone' => 'required|string|max:20',
-            'password' => 'required|string|min:8',
-            'role_id' => 'required|integer|exists:roles,id',
-            'plantation_group' => 'required|string|max:255',
-            'position' => 'required|string|max:255',
-            'wilayah' => 'required|string|max:255',
-        ]);
+        $validatedData = $request->validated();
 
-        // Buat akun login di tabel users
         $user = User::create([
             'name' => $validatedData['name'],
             'email' => $validatedData['email'],
             'password' => Hash::make($validatedData['password']),
         ]);
 
-        // Berikan peran (role) yang dipilih dari form
         $user->roles()->attach($validatedData['role_id']);
 
-        // Buat data profil di tabel employees
         $employee = Employee::create([
             'id' => $validatedData['id'],
             'name' => $validatedData['name'],
@@ -82,7 +71,7 @@ class EmployeeController extends Controller
             'phone' => $validatedData['phone'],
         ]);
 
-        return response()->json($employee, 201);
+        return $this->successResponse(new EmployeeResource($employee->load('user.roles')), 'Karyawan baru berhasil dibuat.', 201);
     }
 
     /**
@@ -90,32 +79,24 @@ class EmployeeController extends Controller
      */
     public function show(Employee $employee)
     {
-        return $employee->load('user.roles');
+        $employeeData = $employee->load('user.roles');
+        return $this->successResponse(new EmployeeResource($employeeData), 'Detail karyawan berhasil diambil.');
     }
 
     /**
      * Mengupdate data karyawan dan rolenya.
      */
-    public function update(Request $request, Employee $employee)
+    public function update(UpdateEmployeeRequest $request, Employee $employee)
     {
-        $validatedData = $request->validate([
-            'name' => 'sometimes|required|string|max:255',
-            'position' => 'sometimes|required|string|max:255',
-            'phone' => 'sometimes|required|string|max:20',
-            'role_id' => 'sometimes|integer|exists:roles,id',
-            'plantation_group' => 'sometimes|required|string|max:255',
-            'wilayah' => 'sometimes|required|string|max:255',
-        ]);
+        $validatedData = $request->validated();
 
-        // Update data di tabel employees
         $employee->update($validatedData);
 
-        // Jika ada role_id yang dikirim, update peran user terkait
-        if ($request->has('role_id') && $employee->user) {
+        if (isset($validatedData['role_id']) && $employee->user) {
             $employee->user->roles()->sync([$validatedData['role_id']]);
         }
 
-        return response()->json($employee->load('user.roles'));
+        return $this->successResponse(new EmployeeResource($employee->load('user.roles')), 'Data karyawan berhasil diperbarui.');
     }
 
     /**
@@ -126,9 +107,37 @@ class EmployeeController extends Controller
         if ($employee->user) {
             $employee->user->delete();
         }
-
         $employee->delete();
 
-        return response()->json(null, 204);
+        return $this->successResponse(null, 'Karyawan berhasil dihapus.');
+    }
+
+    /**
+     * 2. Menambahkan method baru untuk mengupdate foto profil.
+     */
+    public function updatePhoto(Request $request, Employee $employee)
+    {
+        $request->validate([
+            'photo' => 'required|image|mimes:jpeg,png,jpg|max:2048',
+        ]);
+
+        $uploadedFile = $request->file('photo');
+
+        // Hapus foto lama di Cloudinary jika ada
+        if ($employee->photo_url) {
+            $pathInfo = pathinfo($employee->photo_url);
+            $publicId = $pathInfo['dirname'] . '/' . $pathInfo['filename'];
+            Cloudinary::destroy($publicId);
+        }
+
+        // Upload file baru ke folder 'profile-photos' di Cloudinary
+        $uploadedFileUrl = Cloudinary::upload($uploadedFile->getRealPath(), [
+            'folder' => 'profile-photos'
+        ])->getSecurePath();
+
+        // Simpan URL baru ke database
+        $employee->update(['photo_url' => $uploadedFileUrl]);
+
+        return $this->successResponse(new EmployeeResource($employee), 'Foto profil berhasil diperbarui.');
     }
 }
