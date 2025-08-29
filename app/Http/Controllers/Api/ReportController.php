@@ -4,10 +4,14 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
-use App\Repositories\ReportRepository; // 1. Import Repository
+use App\Repositories\ReportRepository;
+use App\Http\Traits\ApiResponse;
+use App\Models\TrackingPoint;
+use App\Http\Resources\TrackingPointResource;
 
 class ReportController extends Controller
 {
+     use ApiResponse;
     protected $reportRepository;
 
     /**
@@ -52,5 +56,27 @@ class ReportController extends Controller
         $visits = $this->reportRepository->getVisitDetails($request);
 
         return response()->json($visits);
+    }
+
+    /**
+     * Mengambil koleksi data tracking point mentah untuk satu mandor pada tanggal tertentu.
+     * Berguna untuk menggambar rute perjalanan di peta.
+     */
+    public function getTrackingPoints(Request $request)
+    {
+        $validated = $request->validate([
+            'employee_id' => 'required|string|exists:employees,id',
+            'date' => 'required|date_format:Y-m-d',
+        ]);
+
+        $trackingPoints = TrackingPoint::where('employee_id', $validated['employee_id'])
+            ->whereDate('timestamp', $validated['date'])
+            ->orderBy('timestamp', 'asc')
+            ->get();
+
+        return $this->successResponse(
+            TrackingPointResource::collection($trackingPoints),
+            'Data titik tracking berhasil diambil.'
+        );
     }
 }

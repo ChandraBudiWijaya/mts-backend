@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use App\Http\Traits\ApiResponse;
 use App\Http\Resources\RoleResource;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 
 class RoleController extends Controller
 {
@@ -98,9 +99,18 @@ class RoleController extends Controller
     /**
      * Mengambil semua permission yang tersedia.
      */
+    /**
+     * Mengambil semua permission yang tersedia, dengan caching.
+     */
     public function allPermissions()
     {
-        $permissions = Permission::all();
+        // 2. Gunakan Cache::remember()
+        $permissions = Cache::remember('all_permissions', now()->addHours(24), function () {
+            // Blok kode ini hanya akan dijalankan jika 'all_permissions' tidak ada di cache.
+            return Permission::all();
+        });
+
         return $this->successResponse($permissions, 'Data permissions berhasil diambil.');
     }
+
 }
